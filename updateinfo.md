@@ -319,3 +319,30 @@ public UpdateInfoCustomerResponse updateInfoCustomer(UpdateInfoCustomerRequest r
 This approach ensures that if any error occurs during the update process, all changes will be rolled back to prevent data inconsistency. All operations within the method either complete successfully together or are rolled back entirely to maintain data integrity.
 
 ## 4. Example Usage
+
+
+
+2. Error responses in case of failures:
+
+| Error Code | Error Message | Description |
+|------------|---------------|-------------|
+| error.empty.isdn | ISDN is required | Missing customer phone number |
+| error.empty.account | Dealer's phone number is required | Missing dealer phone number |
+| error.empty.name | Customer name is required | Missing customer name |
+| error.empty.id.type | ID document type is required | Missing identification document type |
+| error.unallow.id.type | ID type is not allowed | Invalid identification document type |
+| error.empty.id.no | ID number is required | Missing identification document number |
+| error.empty.dob | Date of birth is required | Missing date of birth |
+| error.invalid.dob | Invalid date of birth format | Invalid date of birth format |
+| error.empty.sex | Gender is required | Missing gender |
+| error.empty.address | Address is required | Missing address |
+| error.empty.image | At least 2 identification images are required | Missing identification images |
+| error.isdn.invalid | ISDN not found or invalid format | Phone number does not exist or is invalid |
+| error.package.invalid | ISDN has a package type in restricted list | Package type is not allowed |
+| error.isdn.invalid.check | ISDN not active in the system | Subscriber is not active |
+| error.not.account.agent | Dealer account not found or inactive | Dealer does not exist or is inactive |
+| error.account.agent.invalid | Staff account not found or inactive | Staff does not exist or is inactive |
+| error.account.agent.not.exist | Shop account not found or inactive | Shop does not exist or is inactive |
+| error_unallow_register_info | ID number registration limit exceeded | Registration limit exceeded for this identification document |
+| error.upload.image | Image upload failed | Image upload failed |
+| error.update.infor.fail | General update failure | Update information failed |
