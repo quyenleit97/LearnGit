@@ -456,36 +456,23 @@ Phần này mô tả **nghiệp vụ** khi hệ thống BCCS3 tự tạo hóa đ
     
     > **Lưu ý:** Không cần query SQL, chỉ đọc dữ liệu từ `invoice_used` và `sale_trans` đã lưu để điền vào template Excel và chuyển đổi sang PDF.
 
-- **Kết luận luồng BCCS1:**  
-  - BCCS1 chịu trách nhiệm **tạo hóa đơn** và cập nhật `invoiceUsedId` cho giao dịch.  
-  - BCCS3 chỉ **đọc lại dữ liệu** và **in file PDF** dựa trên `InvoiceUsed` đã tồn tại.
-
----
-
-## 5. Logic chọn Template Excel cho Logistics (`templateNameLogistic`)
-
-Phần này mô tả **duy nhất** logic chọn template cho luồng Logistics (khi `PrintInvoiceDTO.isTemplateLogistic = true`).  
-Các luồng in hóa đơn thông thường (không phải Logistics) dùng logic cũ (`templateName`) và **không nằm trong phạm vi tài liệu này**.
-
-Nếu sau khi áp dụng các rule bên dưới mà không tìm được template phù hợp, hệ thống trả lỗi `sale.invoice.print.invoice.type.invalid`.
-
-### 5.1. Template cho Logistics (`getTemplateNameLogistic`)
-
-Phần này dành cho **tester/BA**, nên chỉ mô tả **nghiệp vụ** (không cần hiểu Java code).
-
-#### 5.1.1. Tham số đầu vào
-
-- `custType` lấy từ `SaleTrans.CUST_TYPE` (mapping nghiệp vụ):
-  - `INDIVIDUAL`  → Khách hàng cá nhân
-  - `ORGANIZATION` → Doanh nghiệp/tổ chức
-  - `STATE_BURDEN` → Hóa đơn Nhà nước chịu thuế (State Burden)
-- `invoiceType`:
-  - `SC` – Hóa đơn bán hàng (Standard Credit)
-  - `CR` – Hóa đơn điều chỉnh (Credit)
-
-#### 5.1.2. Ghi chú sử dụng
-
-- Luồng Logistics **bắt buộc** set `PrintInvoiceDTO.isTemplateLogistic = true` và truyền `SaleTrans` vào `PrintInvoiceDTO.saleTrans`.  
-- Chỉ khi `isTemplateLogistic = true` thì hệ thống mới áp dụng bảng logic ở trên.  
-- Đối với template Logistics, phần hiển thị VAT/TAX ở footer có thể được cấu hình hiển thị `"-"` (không tính thuế) theo yêu cầu nghiệp vụ cho State Burden.
+    **Logic chọn Template Excel cho Logistics (`templateNameLogistic`):**
+    
+    - Phần này mô tả **duy nhất** logic chọn template cho luồng Logistics (khi `PrintInvoiceDTO.isTemplateLogistic = true`).  
+    - Các luồng in hóa đơn thông thường (không phải Logistics) dùng logic cũ (`templateName`) và **không nằm trong phạm vi tài liệu này**.
+    - Nếu sau khi áp dụng các rule bên dưới mà không tìm được template phù hợp, hệ thống trả lỗi `sale.invoice.print.invoice.type.invalid`.
+    
+    **Tham số đầu vào:**
+    - `custType` lấy từ `SaleTrans.CUST_TYPE` (mapping nghiệp vụ):
+      - `INDIVIDUAL`  → Khách hàng cá nhân
+      - `ORGANIZATION` → Doanh nghiệp/tổ chức
+      - `STATE_BURDEN` → Hóa đơn Nhà nước chịu thuế (State Burden)
+    - `invoiceType`:
+      - `SC` – Hóa đơn bán hàng (Standard Credit)
+      - `CR` – Hóa đơn điều chỉnh (Credit)
+    
+    **Ghi chú sử dụng:**
+    - Luồng Logistics **bắt buộc** set `PrintInvoiceDTO.isTemplateLogistic = true` và truyền `SaleTrans` vào `PrintInvoiceDTO.saleTrans`.  
+    - Chỉ khi `isTemplateLogistic = true` thì hệ thống mới áp dụng logic chọn template Logistics.  
+    - Đối với template Logistics, phần hiển thị VAT/TAX ở footer có thể được cấu hình hiển thị `"-"` (không tính thuế) theo yêu cầu nghiệp vụ cho State Burden.
 
