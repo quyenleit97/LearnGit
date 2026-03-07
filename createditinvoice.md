@@ -434,6 +434,219 @@ Khi cấu hình `useOldSystemForCreateInvoice = true`, `sale-im-service` không 
 > - Nhánh BCCS1 hiện không tự in PDF trong API này; nó chỉ tạo hóa đơn ở hệ thống cũ rồi xác nhận lại trạng thái tại BCCS3.
 > - BCCS1 sẽ tự xử lý việc lấy dãy hóa đơn `CR`, khóa dãy, tạo `invoice_used` trên schema `bccs_im`, cập nhật hóa đơn gốc, và cập nhật dãy hóa đơn.
 
+#### 4.3.2. Luồng xử lý bên BCCS1 (bccs1-inventory-service)
+
+Phần này mô tả **nghiệp vụ** khi hệ thống BCCS1 nhận yêu cầu tạo credit invoice logistics với tham số `requestId`, `saleTransCode`, `reason`.
+
+1. **Kiểm tra tham số đầu vào**
+   - Nếu `saleTransCode` rỗng/null → trả mã lỗi `"400"`, mô tả theo message `parameter.not.null`.
+
+2. **Lấy giao dịch bán hàng theo `saleTransCode`**
+   - Hệ thống tra cứu giao dịch bán hàng:
+
+     ```sql
+     SELECT *
+     FROM bccs_im.sale_trans
+     WHERE sale_trans_code = :saleTransCode
+     ```
+
+   - Nếu không tìm thấy giao dịch → trả:
+     - `code = "400"`
+     - `description = "Error: Sale trans not found for saleTransCode: {saleTransCode}"`
+
+3. **Kiểm tra đã tồn tại credit invoice cho hóa đơn gốc**
+   - Lấy `invoice_used_id` từ giao dịch.
+   - Nếu có `invoice_used_id`, đọc hóa đơn gốc và kiểm tra xem đã có credit invoice chưa:
+
+     ```sql
+     SELECT *
+     FROM bccs_im.invoice_used
+     WHERE original_invoice = :originalInvoiceNo
+       AND type = :creditType
+       AND status = :status
+     ```
+
+   - Nếu đã tồn tại → trả:
+     - `code = "400"`
+     - `description = "Error: CR invoice already exists for saleTransCode: {saleTransCode}"`
+
+4. **Kiểm tra giao dịch đã có hóa đơn gốc `SC` chưa**
+   - Nếu `invoice_used_id` null hoặc `<= 0` → trả:
+     - `code = "400"`
+     - `description = "Error: SC invoice does not exist for saleTransCode: {saleTransCode}"`
+
+5. **Đọc hóa đơn gốc `SC` và kiểm tra còn hiệu lực**
+   - Tra cứu hóa đơn gốc theo `invoice_used_id`.
+   - Nếu không tìm thấy hoặc `status` của hóa đơn gốc khác trạng thái active → trả:
+     - `code = "400"`
+     - `description = "Error: Original SC invoice not found or inactive for saleTransCode: {saleTransCode}"`
+
+6. **Lấy thông tin shop của giao dịch**
+   - Dùng `shop_id` trong giao dịch để lấy thông tin shop.
+   - Nếu không tìm thấy → trả:
+     - `code = "400"`
+     - `description = "Error: Shop not found for shopId: {shopId}"`
+
+7. **Lấy danh sách serial hóa đơn điều chỉnh được cấu hình**
+   - Hệ thống đọc cấu hình `app_params` để xác định serial nào được phép dùng cho credit invoice:
+
+     ```sql
+     SELECT *
+     FROM bccs_im.app_params
+     WHERE type = 'GET_INVOICE_USED'
+       AND code = 'CODE'
+     ```
+
+   - Sau đó chọn các `serial_no` từ `invoice_list` của shop cấu hình credit invoice (shop ID cố định), chỉ lấy những dãy còn hiệu lực và còn số:
+
+     ```sql
+     SELECT inv.serial_no AS serialNo
+     FROM bccs_im.invoice_list inv
+            JOIN bccs_im.book_type bt
+              ON inv.book_type_id = bt.book_type_id
+     WHERE inv.shop_id = :shopId
+       AND inv.status = :status
+       AND inv.curr_invoice_no >= inv.from_invoice
+       AND inv.curr_invoice_no <= inv.to_invoice
+       AND inv.invoice_type = :invoiceType
+       AND bt.serial_real IN (
+              SELECT value
+              FROM bccs_im.app_params
+              WHERE type = 'CREDIT_INVOICE_USED'
+                AND status = 1
+            )
+     ORDER BY serialNo
+     ```
+
+   - Nếu không có serial khả dụng → trả:
+     - `code = "400"`
+     - `description = "SaleToRetailDAO.013"`
+
+   > **Lưu ý:** Điều kiện `bt.serial_real IN (...)` chỉ được áp dụng khi cấu hình `GET_INVOICE_USED/CODE` có giá trị `"1"`.
+
+8. **Lấy và khóa 1 dãy hóa đơn `CR` còn số**
+   - Hệ thống lấy serial đầu tiên ở bước 7, sau đó tìm 1 dòng `invoice_list` loại hóa đơn điều chỉnh (`CR`) còn số và khóa luôn bản ghi bằng `FOR UPDATE NOWAIT` để tránh cấp trùng:
+
+     ```sql
+     SELECT il.invoice_list_id AS invoiceListId,
+            il.serial_no       AS serialNo,
+            il.block_no        AS blockNo,
+            il.from_invoice    AS fromInvoice,
+            il.to_invoice      AS toInvoice,
+            il.curr_invoice_no AS currInvoiceNo,
+            ( il.serial_no
+              || LPAD(
+                   il.block_no,
+                   (SELECT bt.length_name
+                    FROM   bccs_im.book_type bt
+                    WHERE  bt.book_type_id = il.book_type_id),
+                   '0'
+                 )
+              || LPAD(
+                   il.curr_invoice_no,
+                   (SELECT bt.length_invoice
+                    FROM   bccs_im.book_type bt
+                    WHERE  bt.book_type_id = il.book_type_id),
+                   '0'
+                 )
+            ) AS invoiceNumber
+     FROM   bccs_im.invoice_list il
+     WHERE  il.curr_invoice_no > 0
+       AND  il.curr_invoice_no BETWEEN il.from_invoice AND il.to_invoice
+       AND  il.invoice_type = :invoiceType
+       AND  il.status = :status
+       AND  il.shop_id = :shopId
+       AND  il.serial_no = :serialNo
+     ORDER BY serialNo, currInvoiceNo
+     FOR UPDATE NOWAIT
+     ```
+
+   - Nếu không lấy được dãy hóa đơn → trả:
+     - `code = "400"`
+     - `description = "SaleToRetailDAO.010"`
+
+9. **Đảm bảo số hiện tại của dãy chưa được sử dụng**
+   - Sau khi lấy được `invoice_list`, hệ thống kiểm tra số hiện tại trong dãy đã có trong `invoice_used` chưa:
+
+     ```sql
+     SELECT *
+     FROM bccs_im.invoice_used
+     WHERE invoice_list_id = :invoiceListId
+       AND invoice_id      = :invoiceId
+     ```
+
+   - Nếu đã có bản ghi → trả:
+     - `code = "400"`
+     - `description = "SaleToRetailDAO.010"`
+
+10. **Lấy khóa chính mới cho credit invoice**
+    - Hệ thống lấy `invoice_used_id` mới từ sequence:
+
+      ```sql
+      SELECT bccs_im.invoice_used_seq.NEXTVAL AS invoiceUsedId
+      FROM   dual
+      ```
+
+11. **Tạo bản ghi credit invoice trong `INVOICE_USED`**
+    - Hệ thống tạo mới bản ghi `invoice_used` bằng cách:
+      - Copy gần như toàn bộ dữ liệu từ hóa đơn gốc `SC`.
+      - Ghi đè các thông tin dành cho hóa đơn điều chỉnh.
+
+    - **Mapping chính của credit invoice:**
+      - `invoice_used_id` → sequence `INVOICE_USED_SEQ`
+      - `invoice_list_id`, `serial_no`, `block_no`, `invoice_id`, `invoice_no` → từ dãy hóa đơn lấy ở bước 8
+      - `type` → giá trị số tương ứng với `CR`
+      - `request_credit_inv` → trạng thái `APPROVE`
+      - `approve_credit_inv_date` → thời điểm hiện tại
+      - `approve_credit_inv_user` → `"LOGISTICS_API"`
+      - `is_credit_inv` → `"1"`
+      - `original_invoice` → `invoice_no` của hóa đơn gốc `SC`
+      - `create_date` → thời điểm hiện tại
+      - `note` → gán từ tham số `reason` nếu request có truyền
+      - `print_type1`, `print_type2`, `request_print` → reset về `0`
+      - Các thông tin khách hàng, số tiền, thuế, shop, dịch vụ... → giữ nguyên theo hóa đơn gốc
+
+12. **Cập nhật lại hóa đơn gốc `SC`**
+    - Sau khi tạo credit invoice thành công, hóa đơn gốc cũng được cập nhật trạng thái yêu cầu điều chỉnh:
+      - `request_credit_inv` → `APPROVE`
+      - `approve_credit_inv_date` → thời điểm hiện tại
+      - `approve_credit_inv_user` → `"LOGISTICS_API"`
+
+13. **Cập nhật dãy hóa đơn sau khi đã dùng 1 số**
+    - Hệ thống tăng `curr_invoice_no` của `invoice_list`.
+    - Nếu đã dùng đến cuối dãy thì chuyển trạng thái dãy sang đã dùng hết.
+
+    ```sql
+    -- Nếu còn số trong dãy
+    UPDATE bccs_im.invoice_list
+    SET    curr_invoice_no = curr_invoice_no + 1
+    WHERE  invoice_list_id = :invoiceListId
+
+    -- Nếu đã dùng hết dãy
+    UPDATE bccs_im.invoice_list
+    SET    curr_invoice_no = 0,
+           status = :statusUsingCompleted
+    WHERE  invoice_list_id = :invoiceListId
+    ```
+
+    - Nếu cập nhật dãy thất bại → phát sinh lỗi:
+      - `description = "SaleToCreateInvoiceDAO.error.010"` hoặc message cấu hình tương ứng
+
+14. **Trả kết quả thành công cho phía gọi**
+    - Nếu toàn bộ các bước trên thành công, API trả:
+      - `code = "200"`
+      - `success = true`
+      - `description = "Success: Credit invoice created for saleTransCode: {saleTransCode}"`
+      - Thông tin hóa đơn: ID credit invoice mới, số hóa đơn `CR` vừa tạo, ID giao dịch bán hàng
+
+15. **Xử lý exception**
+    - `IllegalArgumentException` → `code = "400"`, `success = false`, `description = ex.getMessage()`.
+    - Exception khác → `code = "500"`, `success = false`, `description = "ERR.SAE.118"`.
+
+> **Lưu ý:** 
+> - Dãy hóa đơn `CR` không lấy theo `shop_id` của giao dịch bán hàng mà đang lấy theo shop cấu hình riêng (shop ID cố định).
+> - BCCS1 tạo `invoice_used` trên schema `bccs_im`, khác với BCCS3 tạo trên schema `bccs3_sale_trans`.
+
 ---
 
 ## 5. Các lỗi nghiệp vụ chính
